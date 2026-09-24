@@ -5,6 +5,7 @@ package com.example.nearchat.ui
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings as AndroidSettings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -451,6 +452,13 @@ fun ConnectionScreen(core: ChatCore, onBack: () -> Unit, onPermissions: () -> Un
         }
     }
 
+    // Since Android 10 apps can't switch Wi-Fi on themselves; the system panel does it in one tap.
+    fun launchWifiPanel() {
+        try { btIntent.launch(Intent(AndroidSettings.Panel.ACTION_WIFI)) } catch (e: Exception) {
+            try { btIntent.launch(Intent(AndroidSettings.ACTION_WIFI_SETTINGS)) } catch (_: Exception) {}
+        }
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = { GradientTopBar("חיבור למכשירים", onBack, subtitle = if (links.isEmpty()) "לא מחובר" else "${links.size} חיבורים פעילים") },
@@ -541,6 +549,13 @@ fun ConnectionScreen(core: ChatCore, onBack: () -> Unit, onPermissions: () -> Un
                     when {
                         !wifi.supported -> Text("המכשיר לא תומך ב-Wi‑Fi Direct")
                         !wifi.hasPermissions() -> Button(onClick = onPermissions) { Text("אשר הרשאת מכשירים בקרבת מקום") }
+                        !wifi.wifiEnabled -> {
+                            Text(
+                                "Wi‑Fi כבוי. צריך להדליק אותו כדי להתחבר ישירות לטלפון אחר – לא צריך רשת ולא אינטרנט.",
+                                style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(bottom = 8.dp),
+                            )
+                            Button(onClick = { launchWifiPanel() }) { Text("הפעל Wi‑Fi") }
+                        }
                         else -> {
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 Button(onClick = { wifi.discover() }) { Text("חפש מכשירים") }
@@ -654,7 +669,7 @@ fun SettingsScreen(core: ChatCore, onBack: () -> Unit) {
                     Text(core.myFingerprint(), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyLarge)
                 }
                 Text(
-                    "NearChat 1.2 · פרוטוקול ${ChatCore.PROTOCOL_VERSION}",
+                    "NearChat 1.3 · פרוטוקול ${ChatCore.PROTOCOL_VERSION}",
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline,
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding(), textAlign = TextAlign.Center,
                 )

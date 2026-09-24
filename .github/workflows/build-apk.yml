@@ -31,7 +31,12 @@ jobs:
       - name: Build APK
         id: build
         continue-on-error: true
+        env:
+          NEARCHAT_KEYSTORE_PASSWORD: ${{ secrets.NEARCHAT_KEYSTORE_PASSWORD }}
         run: |
+          if [ -z "$NEARCHAT_KEYSTORE_PASSWORD" ]; then
+            echo "::warning::Secret NEARCHAT_KEYSTORE_PASSWORD is missing - APK is signed with a temporary key and will not update over older installs"
+          fi
           chmod +x gradlew
           set -o pipefail
           ./gradlew :app:assembleDebug --no-daemon --stacktrace 2>&1 | tee build.log
@@ -51,7 +56,7 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk NearChat.apk
           gh release delete latest -y --cleanup-tag || true
           gh release create latest NearChat.apk --title "NearChat – build ${{ github.run_number }}" \
-            --notes "APK לבדיקה (debug). commit ${{ github.sha }}" --target ${{ github.sha }}
+            --notes "APK לבדיקה. חתימה קבועה: ${{ secrets.NEARCHAT_KEYSTORE_PASSWORD != '' && 'כן – מתעדכן מעל הגרסה הקודמת' || 'לא – חסר הסוד NEARCHAT_KEYSTORE_PASSWORD' }}. commit ${{ github.sha }}" --target ${{ github.sha }}
 
       - name: Save build log and APK to branch build-output
         if: always()
