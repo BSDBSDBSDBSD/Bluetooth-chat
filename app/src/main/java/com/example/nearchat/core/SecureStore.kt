@@ -25,7 +25,14 @@ class SecureStore(context: Context) {
 
     private fun keystoreKey(): SecretKey {
         val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        try {
+            (ks.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        } catch (e: Exception) {
+            // Broken/unrecoverable entry (seen after OS updates on some phones): replace it
+            // instead of crashing on every launch. loadOrCreateDek() then resets storage.
+            Log.e(TAG, "Keystore key unreadable, recreating", e)
+            try { ks.deleteEntry(KEY_ALIAS) } catch (_: Exception) {}
+        }
         val gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         gen.init(
             KeyGenParameterSpec.Builder(KEY_ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)

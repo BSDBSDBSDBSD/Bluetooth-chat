@@ -27,6 +27,14 @@ import kotlin.concurrent.thread
  * Wi-Fi Direct (Wi-Fi P2P) transport: a direct phone-to-phone Wi-Fi link, no router
  * and no internet. One phone becomes the "group owner" (acts like a tiny hotspot) and
  * runs a TCP server; the others connect to it. The mesh router relays between clients.
+ *
+ * Every WifiP2pManager call is guarded: on many phones they throw SecurityException /
+ * IllegalArgumentException (permission revoked, channel lost) and an uncaught throw
+ * on the main thread closes the app.
+ *
+ * The group owner's server may take a few seconds to come up (its app has to get the
+ * "connected" broadcast first), so clients keep retrying for as long as the group
+ * exists instead of giving up.
  */
 @SuppressLint("MissingPermission")
 class WifiDirectTransport(
@@ -39,7 +47,7 @@ class WifiDirectTransport(
     private var receiverRegistered = false
 
     @Volatile private var server: ServerSocket? = null
-    @Volatile private var clientConnecting = false
+    @Volatile private var clientThread: Thread? = null
     private val myLinks = CopyOnWriteArrayList<Link>()
     @Volatile private var peers: List<FoundDevice> = emptyList()
 
@@ -55,40 +63,58 @@ class WifiDirectTransport(
 
     fun peers(): List<FoundDevice> = peers
 
+    private fun setStatus(s: String) { status = s; onChange() }
+
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(ctx: Context, intent: Intent) {
-            when (intent.action) {
-                WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
-                    p2pEnabled = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                    if (!p2pEnabled) status = "Wi‑Fi כבוי – הפעל Wi‑Fi (אין צורך באינטרנט)"
-                    onChange()
+            try {
+                when (intent.action) {
+                    WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
+                        p2pEnabled = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
+                        if (!p2pEnabled) status = "ה‑Wi‑Fi כבוי. צריך להדליק אותו (לא צריך אינטרנט)"
+                        onChange()
+                    }
+                    WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
+                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+                        val info = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
+                        if (info != null) onConnectionInfo(info) else requestConnectionInfo()
+                    }
+                    WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION -> {
+                        discovering = intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE, -1) == WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED
+                        onChange()
+                    }
                 }
-                WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
-                WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> requestConnectionInfo()
-                WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION -> {
-                    discovering = intent.getIntExtra(WifiP2pManager.EXTRA_DISCOVERY_STATE, -1) == WifiP2pManager.WIFI_P2P_DISCOVERY_STARTED
-                    onChange()
-                }
+            } catch (e: Exception) {
+                Log.e(TAG, "receiver failed", e)
             }
         }
     }
 
     fun start() {
         val m = manager
-        if (m == null) { status = "Wi‑Fi Direct לא נתמך"; onChange(); return }
-        if (!hasPermissions()) { status = "חסרה הרשאת מכשירי Wi‑Fi בקרבת מקום"; onChange(); return }
-        if (channel == null) channel = m.initialize(context, Looper.getMainLooper()) { channel = null; status = "ערוץ Wi‑Fi Direct נסגר"; onChange() }
-        if (!receiverRegistered) {
-            val f = IntentFilter().apply {
-                addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
-                addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
-                addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
-                addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION)
+        if (m == null) { setStatus("המכשיר לא תומך ב‑Wi‑Fi Direct"); return }
+        if (!hasPermissions()) { setStatus("חסרה הרשאה: מכשירים בקרבת מקום"); return }
+        try {
+            if (channel == null) {
+                channel = m.initialize(context, Looper.getMainLooper()) {
+                    channel = null; setStatus("החיבור לשירות Wi‑Fi Direct נסגר. לוחצים שוב על \"חיפוש\"")
+                }
             }
-            context.registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
-            receiverRegistered = true
+            if (!receiverRegistered) {
+                val f = IntentFilter().apply {
+                    addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+                    addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
+                    addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+                    addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION)
+                }
+                context.registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
+                receiverRegistered = true
+            }
+            requestConnectionInfo()
+        } catch (e: Exception) {
+            Log.e(TAG, "start failed", e)
+            setStatus("לא ניתן להפעיל Wi‑Fi Direct")
         }
-        requestConnectionInfo()
     }
 
     fun stop() {
@@ -96,60 +122,80 @@ class WifiDirectTransport(
         closeAll()
     }
 
-    private fun listener(ok: String, fail: String, after: (() -> Unit)? = null) = object : WifiP2pManager.ActionListener {
-        override fun onSuccess() { if (ok.isNotEmpty()) status = ok; onChange(); after?.invoke() }
-        override fun onFailure(reason: Int) {
-            status = "$fail (${reasonText(reason)})"; onChange()
+    /** Returns the channel, (re)initialising it if needed; null if not possible. */
+    private fun ready(): Pair<WifiP2pManager, WifiP2pManager.Channel>? {
+        val m = manager ?: run { setStatus("המכשיר לא תומך ב‑Wi‑Fi Direct"); return null }
+        if (!hasPermissions()) { setStatus("חסרה הרשאה: מכשירים בקרבת מקום"); return null }
+        if (channel == null) start()
+        val c = channel ?: return null
+        return m to c
+    }
+
+    private fun guarded(what: String, block: () -> Unit) {
+        try { block() } catch (e: Exception) {
+            Log.e(TAG, "$what failed", e)
+            setStatus("$what נכשל: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 
+    private fun listener(ok: String, fail: String, after: (() -> Unit)? = null) = object : WifiP2pManager.ActionListener {
+        override fun onSuccess() { if (ok.isNotEmpty()) status = ok; onChange(); after?.invoke() }
+        override fun onFailure(reason: Int) { setStatus("$fail (${reasonText(reason)})") }
+    }
+
     private fun reasonText(r: Int) = when (r) {
-        WifiP2pManager.P2P_UNSUPPORTED -> "לא נתמך"
-        WifiP2pManager.BUSY -> "המערכת עסוקה, נסה שוב"
-        WifiP2pManager.ERROR -> "שגיאה"
+        WifiP2pManager.P2P_UNSUPPORTED -> "לא נתמך במכשיר"
+        WifiP2pManager.BUSY -> "המערכת עסוקה, נסו שוב בעוד כמה שניות"
+        WifiP2pManager.ERROR -> "שגיאה פנימית. כדאי לכבות ולהדליק את ה‑Wi‑Fi"
+        WifiP2pManager.NO_SERVICE_REQUESTS -> "אין בקשות שירות"
         else -> "קוד $r"
     }
 
     fun discover() {
-        val m = manager ?: return; val c = channel ?: run { start(); channel } ?: return
-        if (!hasPermissions()) { status = "חסרה הרשאה"; onChange(); return }
-        m.discoverPeers(c, listener("מחפש מכשירים ב‑Wi‑Fi Direct…", "החיפוש נכשל"))
+        val (m, c) = ready() ?: return
+        guarded("החיפוש") { m.discoverPeers(c, listener("מחפש מכשירים ב‑Wi‑Fi Direct…", "החיפוש נכשל")) }
     }
 
     fun stopDiscovery() {
-        val m = manager ?: return; val c = channel ?: return
-        m.stopPeerDiscovery(c, null)
+        val (m, c) = ready() ?: return
+        guarded("עצירת החיפוש") { m.stopPeerDiscovery(c, null) }
     }
 
     /** Become group owner so several phones can join this one. */
     fun createGroup() {
-        val m = manager ?: return; val c = channel ?: return
-        m.createGroup(c, listener("נוצרה רשת – מכשירים אחרים יכולים להתחבר", "יצירת הרשת נכשלה"))
+        val (m, c) = ready() ?: return
+        guarded("יצירת הרשת") {
+            m.createGroup(c, listener("נוצרה רשת. עכשיו אפשר להתחבר אליה מהמכשירים האחרים", "יצירת הרשת נכשלה"))
+        }
     }
 
     fun connect(address: String) {
-        val m = manager ?: return; val c = channel ?: return
+        val (m, c) = ready() ?: return
         val cfg = WifiP2pConfig().apply {
             deviceAddress = address
             wps.setup = WpsInfo.PBC
         }
-        m.connect(c, cfg, listener("שולח בקשת חיבור… אשר במכשיר השני אם תתבקש", "החיבור נכשל"))
+        guarded("החיבור") { m.connect(c, cfg, listener("נשלחה בקשת חיבור. אם מופיעה הודעה במכשיר השני, צריך לאשר אותה", "החיבור נכשל")) }
     }
 
     fun disconnect() {
-        val m = manager ?: return; val c = channel ?: return
         closeAll()
-        m.removeGroup(c, listener("נותק", "הניתוק נכשל"))
+        val m = manager ?: return
+        val c = channel ?: return
+        guarded("הניתוק") { m.removeGroup(c, listener("נותק", "הניתוק נכשל")) }
     }
 
     private fun requestPeers() {
         val m = manager ?: return; val c = channel ?: return
         if (!hasPermissions()) return
-        m.requestPeers(c) { list ->
-            peers = list.deviceList.map { d ->
-                FoundDevice(d.deviceName.ifBlank { d.deviceAddress }, d.deviceAddress, statusText(d.status))
+        guarded("קבלת רשימת המכשירים") {
+            m.requestPeers(c) { list ->
+                peers = list?.deviceList.orEmpty().mapNotNull { d ->
+                    val addr = d?.deviceAddress ?: return@mapNotNull null
+                    FoundDevice(d.deviceName?.takeIf { it.isNotBlank() } ?: addr, addr, statusText(d.status))
+                }
+                onChange()
             }
-            onChange()
         }
     }
 
@@ -164,12 +210,12 @@ class WifiDirectTransport(
 
     private fun requestConnectionInfo() {
         val m = manager ?: return; val c = channel ?: return
-        m.requestConnectionInfo(c) { info -> onConnectionInfo(info) }
+        guarded("קבלת מצב החיבור") { m.requestConnectionInfo(c) { info -> onConnectionInfo(info) } }
     }
 
     private fun onConnectionInfo(info: WifiP2pInfo?) {
         if (info == null || !info.groupFormed) {
-            if (groupFormed) status = "רשת Wi‑Fi Direct נותקה"
+            if (groupFormed) status = "רשת ה‑Wi‑Fi Direct התנתקה"
             groupFormed = false; isGroupOwner = false
             closeAll()
             onChange()
@@ -177,9 +223,10 @@ class WifiDirectTransport(
         }
         groupFormed = true
         isGroupOwner = info.isGroupOwner
+        // Both roles listen, so a connection can be made in either direction.
+        startServer()
         if (info.isGroupOwner) {
-            startServer()
-            status = "מארח רשת Wi‑Fi Direct – ממתין למכשירים"
+            status = "אתה המארח של הרשת. מחכה שהמכשירים האחרים יתחברו…"
         } else {
             val owner = info.groupOwnerAddress
             if (owner != null) connectToOwner(owner)
@@ -194,7 +241,7 @@ class WifiDirectTransport(
         val ss = try {
             ServerSocket().apply { reuseAddress = true; bind(InetSocketAddress(PORT)) }
         } catch (e: Exception) {
-            Log.e(TAG, "server bind failed", e); status = "פתיחת שרת נכשלה"; return
+            Log.e(TAG, "server bind failed", e); status = "לא ניתן לפתוח את השרת המקומי (פורט $PORT תפוס)"; return
         }
         server = ss
         thread(name = "wfd-server", isDaemon = true) {
@@ -205,28 +252,32 @@ class WifiDirectTransport(
         }
     }
 
+    private fun hasLiveLinkTo(host: String) = myLinks.any { !it.closed && it.address == host }
+
+    /**
+     * Connects to the group owner and keeps trying while the group exists. The owner's
+     * app may still be starting its server, or the DHCP address on this side may not be
+     * ready yet, so early failures are expected.
+     */
     private fun connectToOwner(owner: InetAddress) {
-        if (clientConnecting) return
-        if (myLinks.any { !it.closed && it.address == owner.hostAddress }) return
-        clientConnecting = true
-        thread(name = "wfd-client", isDaemon = true) {
-            try {
-                for (attempt in 1..10) {
-                    try {
-                        val s = Socket()
-                        s.connect(InetSocketAddress(owner, PORT), 5000)
-                        attachSocket(s)
-                        status = "מחובר ב‑Wi‑Fi Direct"
-                        onChange()
-                        return@thread
-                    } catch (e: Exception) {
-                        Thread.sleep(1500)
-                    }
+        val host = owner.hostAddress ?: return
+        if (hasLiveLinkTo(host)) return
+        if (clientThread?.isAlive == true) return
+        clientThread = thread(name = "wfd-client", isDaemon = true) {
+            var attempt = 0
+            while (groupFormed && !isGroupOwner && !hasLiveLinkTo(host)) {
+                attempt++
+                try {
+                    val s = Socket()
+                    s.connect(InetSocketAddress(owner, PORT), 4000)
+                    attachSocket(s)
+                    setStatus("מחובר ב‑Wi‑Fi Direct")
+                    return@thread
+                } catch (e: Exception) {
+                    Log.i(TAG, "connect to owner $host attempt $attempt: ${e.message}")
+                    if (attempt == 4) setStatus("מחכה למכשיר המארח… צריך לוודא שהאפליקציה פתוחה בו")
+                    try { Thread.sleep(if (attempt < 10) 1500L else 4000L) } catch (_: InterruptedException) { return@thread }
                 }
-                status = "לא ניתן להתחבר למארח – ודא ש‑NearChat פתוח בו"
-                onChange()
-            } finally {
-                clientConnecting = false
             }
         }
     }
@@ -249,6 +300,8 @@ class WifiDirectTransport(
     private fun closeAll() {
         try { server?.close() } catch (_: Exception) {}
         server = null
+        clientThread?.interrupt()
+        clientThread = null
         myLinks.forEach { it.close() }
         myLinks.clear()
     }
