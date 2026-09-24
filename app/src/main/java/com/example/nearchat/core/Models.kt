@@ -18,12 +18,14 @@ data class Contact(
     val lastSeen: Long = 0,
     val btAddress: String? = null,
     val keyChanged: Boolean = false,
+    /** Hash of the profile picture we have stored for this contact ("" = none). */
+    val avatar: String = "",
 ) {
     val online: Boolean get() = System.currentTimeMillis() - lastSeen < ONLINE_WINDOW_MS
 
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("pub", publicKey)
-        .put("seen", lastSeen).put("bt", btAddress ?: "").put("kc", keyChanged)
+        .put("seen", lastSeen).put("bt", btAddress ?: "").put("kc", keyChanged).put("av", avatar)
 
     companion object {
         fun fromJson(o: JSONObject) = Contact(
@@ -33,6 +35,7 @@ data class Contact(
             lastSeen = o.optLong("seen", 0),
             btAddress = o.optString("bt", "").ifEmpty { null },
             keyChanged = o.optBoolean("kc", false),
+            avatar = o.optString("av", ""),
         )
     }
 }
@@ -129,7 +132,12 @@ data class ConversationSummary(
     val online: Boolean,
     val lastMessage: ChatMessage?,
     val unread: Int,
+    /** Profile picture hash of the other person (private chats only). */
+    val avatar: String = "",
 )
+
+/** Storage id of a user's profile picture (mine is stored under my own id). */
+fun avatarMediaId(userId: String) = "avatar-$userId"
 
 data class LinkInfo(val transport: TransportKind, val address: String, val remoteName: String?)
 

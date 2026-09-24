@@ -10,10 +10,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.lightColorScheme
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -23,7 +30,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
@@ -32,7 +38,10 @@ import com.example.nearchat.ui.ChatScreen
 import com.example.nearchat.ui.ConnectionScreen
 import com.example.nearchat.ui.ContactsScreen
 import com.example.nearchat.ui.HomeScreen
+import com.example.nearchat.ui.LocalCore
 import com.example.nearchat.ui.LocalRev
+import com.example.nearchat.ui.NearChatTheme
+import com.example.nearchat.ui.WelcomeScreen
 import com.example.nearchat.ui.SettingsScreen
 
 class MainActivity : ComponentActivity() {
@@ -50,6 +59,7 @@ class MainActivity : ComponentActivity() {
                 CompositionLocalProvider(
                     LocalLayoutDirection provides LayoutDirection.Rtl,
                     LocalRev provides rev,
+                    LocalCore provides core,
                 ) {
                     App(core, pendingConversation)
                 }
@@ -88,14 +98,8 @@ private val basePermissions = arrayOf(
     Manifest.permission.POST_NOTIFICATIONS,
 )
 
-@Composable
-fun NearChatTheme(content: @Composable () -> Unit) {
-    val scheme = if (isSystemInDarkTheme()) darkColorScheme(primary = Color(0xFF9DB0FF), secondary = Color(0xFF9DB0FF))
-    else lightColorScheme(primary = Color(0xFF405DE6), secondary = Color(0xFF5B6CC9))
-    MaterialTheme(colorScheme = scheme, content = content)
-}
-
 private sealed interface Screen {
+    data object Welcome : Screen
     data object Home : Screen
     data object Contacts : Screen
     data object Connection : Screen
@@ -106,7 +110,7 @@ private sealed interface Screen {
 @Composable
 fun App(core: ChatCore, pendingConversation: MutableState<String?>) {
     val ctx = LocalContext.current
-    var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+    var screen by remember { mutableStateOf<Screen>(if (core.onboarded) Screen.Home else Screen.Welcome) }
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
         core.applyTransports()
@@ -123,19 +127,35 @@ fun App(core: ChatCore, pendingConversation: MutableState<String?>) {
         if (pending != null) { screen = Screen.Chat(pending); pendingConversation.value = null }
     }
 
-    BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
+    BackHandler(enabled = screen != Screen.Home && screen != Screen.Welcome) { screen = Screen.Home }
 
-    when (val s = screen) {
+    AnimatedContent(
+        targetState = screen,
+        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+        transitionSpec = {
+            // Going deeper slides in from the leading edge (RTL: from the left); going home reverses it.
+            val forward = targetState != Screen.Home
+            val dir = if (forward) -1 else 1
+            (slideInHorizontally { w -> dir * w / 4 } + fadeIn()) togetherWith (slideOutHorizontally { w -> -dir * w / 4 } + fadeOut())
+        },
+        label = "screens",
+    ) { target -> Box(Modifier.fillMaxSize()) { ScreenContent(core, target, { screen = it }, { permissionLauncher.launch(it) }) } }
+}
+
+@Composable
+private fun ScreenContent(core: ChatCore, s: Screen, go: (Screen) -> Unit, requestPermissions: (Array<String>) -> Unit) {
+    when (s) {
+        Screen.Welcome -> WelcomeScreen(core, onDone = { go(Screen.Home) })
         Screen.Home -> HomeScreen(
             core = core,
-            onOpenChat = { screen = Screen.Chat(it) },
-            onContacts = { screen = Screen.Contacts },
-            onConnection = { screen = Screen.Connection },
-            onSettings = { screen = Screen.Settings },
+            onOpenChat = { go(Screen.Chat(it)) },
+            onContacts = { go(Screen.Contacts) },
+            onConnection = { go(Screen.Connection) },
+            onSettings = { go(Screen.Settings) },
         )
-        Screen.Contacts -> ContactsScreen(core, onBack = { screen = Screen.Home }, onOpenChat = { screen = Screen.Chat(it) }, onConnection = { screen = Screen.Connection })
-        Screen.Connection -> ConnectionScreen(core, onBack = { screen = Screen.Home }, onPermissions = { permissionLauncher.launch(basePermissions) })
-        Screen.Settings -> SettingsScreen(core, onBack = { screen = Screen.Home })
-        is Screen.Chat -> ChatScreen(core, s.conversationId, onBack = { screen = Screen.Home })
+        Screen.Contacts -> ContactsScreen(core, onBack = { go(Screen.Home) }, onOpenChat = { go(Screen.Chat(it)) }, onConnection = { go(Screen.Connection) })
+        Screen.Connection -> ConnectionScreen(core, onBack = { go(Screen.Home) }, onPermissions = { requestPermissions(basePermissions) })
+        Screen.Settings -> SettingsScreen(core, onBack = { go(Screen.Home) })
+        is Screen.Chat -> ChatScreen(core, s.conversationId, onBack = { go(Screen.Home) })
     }
 }

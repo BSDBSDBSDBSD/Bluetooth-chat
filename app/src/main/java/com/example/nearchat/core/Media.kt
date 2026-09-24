@@ -37,6 +37,33 @@ object ImageUtil {
     } catch (e: Exception) {
         Log.e("ImageUtil", "prepare failed", e); null
     }
+
+    /** Center-crops to a square profile picture, small enough to share with every contact. */
+    fun prepareAvatar(context: Context, uri: Uri): ByteArray? = try {
+        val src = ImageDecoder.createSource(context.contentResolver, uri)
+        val full = ImageDecoder.decodeBitmap(src) { decoder, info, _ ->
+            val w = info.size.width; val h = info.size.height
+            val scale = minOf(1f, 720f / minOf(w, h))
+            if (scale < 1f) decoder.setTargetSize((w * scale).toInt().coerceAtLeast(1), (h * scale).toInt().coerceAtLeast(1))
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+        }
+        val side = minOf(full.width, full.height)
+        val square = Bitmap.createBitmap(full, (full.width - side) / 2, (full.height - side) / 2, side, side)
+        val scaled = Bitmap.createScaledBitmap(square, AVATAR_SIDE, AVATAR_SIDE, true)
+        var quality = 85
+        var out: ByteArray
+        do {
+            val bos = ByteArrayOutputStream()
+            scaled.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+            out = bos.toByteArray()
+            quality -= 10
+        } while (out.size > 60_000 && quality >= 40)
+        out
+    } catch (e: Exception) {
+        Log.e("ImageUtil", "prepareAvatar failed", e); null
+    }
+
+    private const val AVATAR_SIDE = 320
 }
 
 /** Records AAC voice notes into a temporary file. */
