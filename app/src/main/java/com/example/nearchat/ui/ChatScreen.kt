@@ -9,6 +9,29 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -35,18 +58,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
@@ -54,14 +74,10 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -121,7 +137,8 @@ fun ChatScreen(core: ChatCore, conv: String, onBack: () -> Unit) {
     DisposableEffect(conv) {
         core.openConversation(conv)
         onDispose {
-            core.openConversation(null)
+            // With animated transitions the next screen may already have opened another chat.
+            if (core.activeConversation == conv) core.openConversation(null)
             recorder.cancel()
         }
     }
@@ -172,86 +189,98 @@ fun ChatScreen(core: ChatCore, conv: String, onBack: () -> Unit) {
     }
 
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
         topBar = {
-            TopAppBar(
-                navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "חזרה") } },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Avatar(title, conv, group = isGroup, size = 36.dp)
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(title, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                when {
-                                    isGroup -> "${group?.members?.size ?: 0} משתתפים"
-                                    online -> "זמין"
-                                    else -> "לא מחובר – הודעות יישלחו כשיתחבר"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        }
-                    }
+            GradientTopBar(
+                title = title,
+                onBack = onBack,
+                subtitle = when {
+                    isGroup -> "${group?.members?.size ?: 0} משתתפים"
+                    online -> "זמין עכשיו"
+                    else -> "לא מחובר – ההודעות יישלחו כשיתחבר"
                 },
-                actions = { IconButton(onClick = { showInfo = true }) { Icon(Icons.Default.Info, contentDescription = "פרטים") } },
-            )
+                leading = {
+                    Avatar(title, conv, size = 40.dp, group = isGroup, avatarHash = contact?.avatar ?: "", online = if (isGroup) null else online, ring = true)
+                },
+                onTitleClick = { showInfo = true },
+            ) { HeaderIcon(Icons.Default.Info, "פרטים") { showInfo = true } }
         },
         bottomBar = {
-            Surface(tonalElevation = 3.dp, modifier = Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
-                Column {
-                    val e = editing
-                    if (e != null) {
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text("עריכת הודעה", style = MaterialTheme.typography.labelLarge, modifier = Modifier.weight(1f))
-                            IconButton(onClick = { editing = null; input = "" }) { Icon(Icons.Default.Close, contentDescription = "ביטול עריכה") }
+            Column(
+                Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.background)
+                    .windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars)).padding(horizontal = 8.dp, vertical = 8.dp),
+            ) {
+                val e = editing
+                if (e != null) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(bottom = 6.dp).clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.primaryContainer).padding(start = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("עריכת הודעה", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                            Text(e.text, maxLines = 1, style = MaterialTheme.typography.bodySmall)
                         }
+                        IconButton(onClick = { editing = null; input = "" }) { Icon(Icons.Default.Close, contentDescription = "ביטול עריכה") }
                     }
-                    if (recording) {
-                        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Mic, contentDescription = null, tint = Color(0xFFD32F2F))
-                            Spacer(Modifier.width(8.dp))
-                            Text("מקליט… ${formatDuration(recordMs)}", modifier = Modifier.weight(1f))
-                            TextButton(onClick = { finishRecording(false) }) { Text("בטל") }
-                            IconButton(onClick = { finishRecording(true) }) {
-                                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "שלח הקלטה", tint = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                    } else {
-                        Row(Modifier.fillMaxWidth().padding(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                }
+                Row(verticalAlignment = Alignment.Bottom) {
+                    Row(
+                        Modifier.weight(1f).heightIn(min = 52.dp).clip(RoundedCornerShape(26.dp))
+                            .background(MaterialTheme.colorScheme.surface).padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (recording) {
+                            val pulse by rememberInfiniteTransition(label = "rec").animateFloat(
+                                0.3f, 1f, infiniteRepeatable(tween(600), RepeatMode.Reverse), label = "pulse",
+                            )
+                            Spacer(Modifier.width(12.dp))
+                            Box(Modifier.size(12.dp).alpha(pulse).clip(CircleShape).background(Color(0xFFEF4444)))
+                            Spacer(Modifier.width(10.dp))
+                            Text("מקליט  ${formatDuration(recordMs)}", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                            TextButton(onClick = { finishRecording(false) }) { Text("בטל", color = MaterialTheme.colorScheme.error) }
+                        } else {
                             if (editing == null) {
                                 IconButton(onClick = {
                                     pickImage.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                }) { Icon(Icons.Default.Image, contentDescription = "שלח תמונה") }
-                            }
-                            OutlinedTextField(
+                                }) { Icon(Icons.Default.AddPhotoAlternate, contentDescription = "שלח תמונה", tint = MaterialTheme.colorScheme.primary) }
+                            } else Spacer(Modifier.width(14.dp))
+                            TextField(
                                 value = input,
                                 onValueChange = { input = it },
                                 modifier = Modifier.weight(1f),
-                                placeholder = { Text("כתוב הודעה…") },
+                                placeholder = { Text("הודעה…") },
                                 maxLines = 5,
-                                shape = RoundedCornerShape(24.dp),
+                                colors = TextFieldDefaults.colors(
+                                    focusedContainerColor = Color.Transparent, unfocusedContainerColor = Color.Transparent,
+                                    focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
+                                ),
                             )
-                            if (input.isBlank() && editing == null) {
-                                IconButton(onClick = { startRecording() }) { Icon(Icons.Default.Mic, contentDescription = "הקלט הודעה קולית") }
-                            } else {
-                                IconButton(onClick = { submit() }) {
-                                    Icon(
-                                        if (editing != null) Icons.Default.Done else Icons.AutoMirrored.Filled.Send,
-                                        contentDescription = "שלח", tint = MaterialTheme.colorScheme.primary,
-                                    )
-                                }
-                            }
                         }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    when {
+                        recording -> GradientCircleButton(Icons.AutoMirrored.Filled.Send, "שלח הקלטה", { finishRecording(true) }, size = 52.dp)
+                        input.isBlank() && editing == null -> GradientCircleButton(Icons.Default.Mic, "הקלט הודעה קולית", { startRecording() }, size = 52.dp)
+                        else -> GradientCircleButton(
+                            if (editing != null) Icons.Default.Done else Icons.AutoMirrored.Filled.Send, "שלח", { submit() }, size = 52.dp,
+                        )
                     }
                 }
             }
         },
     ) { p ->
-        Column(Modifier.fillMaxSize().padding(p)) {
+        Column(
+            Modifier.fillMaxSize().padding(p).background(
+                Brush.verticalGradient(listOf(MaterialTheme.colorScheme.background, MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))),
+            ),
+        ) {
             if (contact?.keyChanged == true) {
                 Row(
-                    Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.errorContainer).clickable { showInfo = true }.padding(10.dp),
+                    Modifier.fillMaxWidth().padding(8.dp).clip(RoundedCornerShape(16.dp)).background(MaterialTheme.colorScheme.errorContainer)
+                        .clickable { showInfo = true }.padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onErrorContainer)
@@ -262,24 +291,60 @@ fun ChatScreen(core: ChatCore, conv: String, onBack: () -> Unit) {
                     )
                 }
             }
-            LazyColumn(
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                state = listState,
-                reverseLayout = true,
-                contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp),
-            ) {
-                items(messages.asReversed(), key = { it.id }) { m ->
-                    MessageBubble(
-                        core = core,
-                        m = m,
-                        mine = m.senderId == core.myId,
-                        showSender = isGroup,
-                        playing = playingId == m.id,
-                        onOpenImage = { viewImage = m.id },
-                        onEdit = { editing = m; input = m.text },
-                        onDeleteForAll = { core.deleteMessage(conv, m.id) },
-                        onDeleteLocal = { core.deleteLocally(conv, m.id) },
-                    )
+            if (messages.isEmpty()) {
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
+                        Avatar(title, conv, size = 96.dp, group = isGroup, avatarHash = contact?.avatar ?: "")
+                        Spacer(Modifier.height(14.dp))
+                        Text(title, style = MaterialTheme.typography.titleLarge)
+                        Spacer(Modifier.height(6.dp))
+                        Row(
+                            Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface).padding(horizontal = 12.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                            Spacer(Modifier.width(6.dp))
+                            Text("השיחה מוצפנת מקצה לקצה", style = MaterialTheme.typography.labelMedium)
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Text("שלחו הודעה ראשונה 👋", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    state = listState,
+                    reverseLayout = true,
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                ) {
+                    // Reversed layout: items listed from newest to oldest, drawn bottom-up.
+                    for (i in messages.indices.reversed()) {
+                        val m = messages[i]
+                        val prev = messages.getOrNull(i - 1)
+                        val next = messages.getOrNull(i + 1)
+                        val firstOfRun = prev == null || prev.senderId != m.senderId || m.timestamp - prev.timestamp > RUN_GAP_MS || !sameDay(prev.timestamp, m.timestamp)
+                        val lastOfRun = next == null || next.senderId != m.senderId || next.timestamp - m.timestamp > RUN_GAP_MS || !sameDay(next.timestamp, m.timestamp)
+                        item(key = m.id) {
+                            val mine = m.senderId == core.myId
+                            MessageBubble(
+                                core = core,
+                                m = m,
+                                mine = mine,
+                                group = isGroup,
+                                firstOfRun = firstOfRun,
+                                lastOfRun = lastOfRun,
+                                senderAvatar = if (isGroup && !mine && lastOfRun) (core.contact(m.senderId)?.avatar ?: "") else null,
+                                playing = playingId == m.id,
+                                onOpenImage = { viewImage = m.id },
+                                onEdit = { editing = m; input = m.text },
+                                onDeleteForAll = { core.deleteMessage(conv, m.id) },
+                                onDeleteLocal = { core.deleteLocally(conv, m.id) },
+                            )
+                        }
+                        if (prev == null || !sameDay(prev.timestamp, m.timestamp)) {
+                            item(key = "day-" + m.id) { DayChip(formatDayLabel(m.timestamp)) }
+                        }
+                    }
                 }
             }
         }
@@ -298,12 +363,31 @@ fun ChatScreen(core: ChatCore, conv: String, onBack: () -> Unit) {
     }
 }
 
+private const val RUN_GAP_MS = 3 * 60 * 1000L
+
+@Composable
+private fun DayChip(label: String) {
+    Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.9f))
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+        )
+    }
+}
+
 @Composable
 private fun MessageBubble(
     core: ChatCore,
     m: ChatMessage,
     mine: Boolean,
-    showSender: Boolean,
+    group: Boolean,
+    firstOfRun: Boolean,
+    lastOfRun: Boolean,
+    senderAvatar: String?,
     playing: Boolean,
     onOpenImage: () -> Unit,
     onEdit: () -> Unit,
@@ -312,39 +396,62 @@ private fun MessageBubble(
 ) {
     var menu by remember { mutableStateOf(false) }
     val clipboard = LocalClipboardManager.current
-    // In RTL, Arrangement.Start is the right side: my messages on the right, like other Hebrew chat apps.
-    Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), horizontalArrangement = if (mine) Arrangement.Start else Arrangement.End) {
+    val big = 20.dp
+    val small = 6.dp
+    // RTL: "start" is the right edge. Mine sit on the right with the tail bottom-right; theirs mirror that.
+    val shape = if (mine) RoundedCornerShape(
+        topStart = if (firstOfRun) big else small, topEnd = big, bottomEnd = big, bottomStart = small,
+    ) else RoundedCornerShape(
+        topStart = big, topEnd = if (firstOfRun) big else small, bottomEnd = small, bottomStart = big,
+    )
+    val isImage = !m.deleted && m.type == MessageType.IMAGE
+    val onColor = if (mine) Color.White else MaterialTheme.colorScheme.onSurface
+    val metaColor = if (mine) Color.White.copy(alpha = 0.75f) else MaterialTheme.colorScheme.outline
+
+    Row(
+        Modifier.fillMaxWidth().padding(top = if (firstOfRun) 6.dp else 1.5.dp, bottom = 1.5.dp),
+        horizontalArrangement = if (mine) Arrangement.Start else Arrangement.End,
+        verticalAlignment = Alignment.Bottom,
+    ) {
         Box {
-            Surface(
-                shape = RoundedCornerShape(16.dp),
-                color = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                modifier = Modifier
+            Column(
+                Modifier
                     .widthIn(max = 300.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .shadow(if (mine) 3.dp else 1.dp, shape, spotColor = if (mine) Brand.Violet else Color.Black)
+                    .clip(shape)
+                    .then(if (mine) Modifier.background(Brand.bubble) else Modifier.background(MaterialTheme.colorScheme.surface))
                     .combinedClickable(
                         onClick = {
                             if (!m.deleted && m.type == MessageType.IMAGE && m.hasMedia) onOpenImage()
                             else if (!m.deleted && m.type == MessageType.VOICE && m.hasMedia) core.voicePlayer.toggle(m.id)
                         },
                         onLongClick = { menu = true },
-                    ),
+                    )
+                    .padding(if (isImage) 4.dp else 0.dp),
             ) {
-                Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-                    if (showSender && !mine) {
-                        Text(m.senderName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Column(Modifier.padding(horizontal = if (isImage) 6.dp else 12.dp, vertical = if (isImage) 2.dp else 8.dp)) {
+                    if (group && !mine && firstOfRun) {
+                        Text(
+                            m.senderName, style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.Bold,
+                            color = senderColor(m.senderId), modifier = Modifier.padding(bottom = 2.dp),
+                        )
                     }
                     when {
-                        m.deleted -> Text("🚫 ההודעה נמחקה", fontStyle = FontStyle.Italic, color = MaterialTheme.colorScheme.outline)
+                        m.deleted -> Text("🚫 ההודעה נמחקה", fontStyle = FontStyle.Italic, color = metaColor)
                         m.type == MessageType.IMAGE -> EncryptedImage(
                             core, m.id,
-                            Modifier.widthIn(max = 260.dp).heightIn(max = 320.dp).clip(RoundedCornerShape(10.dp)),
+                            Modifier.widthIn(max = 280.dp).heightIn(max = 340.dp).clip(RoundedCornerShape(16.dp)),
+                            contentScale = ContentScale.Crop,
                         )
-                        m.type == MessageType.VOICE -> VoiceContent(core, m, playing)
-                        else -> Text(m.text)
+                        m.type == MessageType.VOICE -> VoiceContent(core, m, playing, mine)
+                        else -> Text(m.text, color = onColor, style = MaterialTheme.typography.bodyLarge)
                     }
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
-                        if (m.edited && !m.deleted) Text("נערך · ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                        Text(formatTime(m.timestamp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.align(Alignment.End).padding(top = 3.dp),
+                    ) {
+                        if (m.edited && !m.deleted) Text("נערך · ", style = MaterialTheme.typography.labelSmall, color = metaColor)
+                        Text(formatTime(m.timestamp), style = MaterialTheme.typography.labelSmall, color = metaColor)
                         if (mine) {
                             Spacer(Modifier.width(4.dp))
                             val (icon, desc) = when (m.status) {
@@ -354,51 +461,99 @@ private fun MessageBubble(
                                 MessageStatus.RECEIVED -> Icons.Default.Done to ""
                             }
                             Icon(
-                                icon, contentDescription = desc, modifier = Modifier.size(14.dp),
-                                tint = if (m.status == MessageStatus.DELIVERED) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                                icon, contentDescription = desc, modifier = Modifier.size(15.dp),
+                                tint = if (m.status == MessageStatus.DELIVERED) Brand.Delivered else metaColor,
                             )
-                            if (m.syncPending) Icon(Icons.Default.Schedule, contentDescription = "עדכון ממתין", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.outline)
+                            if (m.syncPending) Icon(Icons.Default.Schedule, contentDescription = "עדכון ממתין", modifier = Modifier.size(14.dp), tint = metaColor)
                         }
                     }
                 }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 if (!m.deleted && m.type == MessageType.TEXT) {
-                    DropdownMenuItem(text = { Text("העתק") }, onClick = { menu = false; clipboard.setText(AnnotatedString(m.text)) })
+                    DropdownMenuItem(
+                        text = { Text("העתק") }, leadingIcon = { Icon(Icons.Default.ContentCopy, contentDescription = null) },
+                        onClick = { menu = false; clipboard.setText(AnnotatedString(m.text)) },
+                    )
                 }
                 if (mine && !m.deleted && m.type == MessageType.TEXT) {
-                    DropdownMenuItem(text = { Text("ערוך") }, onClick = { menu = false; onEdit() })
+                    DropdownMenuItem(
+                        text = { Text("ערוך") }, leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                        onClick = { menu = false; onEdit() },
+                    )
                 }
                 if (mine && !m.deleted) {
-                    DropdownMenuItem(text = { Text("מחק לכולם") }, onClick = { menu = false; onDeleteForAll() })
+                    DropdownMenuItem(
+                        text = { Text("מחק לכולם", color = MaterialTheme.colorScheme.error) },
+                        leadingIcon = { Icon(Icons.Default.DeleteForever, contentDescription = null, tint = MaterialTheme.colorScheme.error) },
+                        onClick = { menu = false; onDeleteForAll() },
+                    )
                 }
                 if (!m.deleted) {
-                    DropdownMenuItem(text = { Text("מחק אצלי") }, onClick = { menu = false; onDeleteLocal() })
+                    DropdownMenuItem(
+                        text = { Text("מחק אצלי") }, leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
+                        onClick = { menu = false; onDeleteLocal() },
+                    )
                 }
-                DropdownMenuItem(text = { Text("סגור") }, onClick = { menu = false })
             }
+        }
+        // Sender avatar for other people's messages in groups (only on the last bubble of a run).
+        if (group && !mine) {
+            Spacer(Modifier.width(6.dp))
+            if (senderAvatar != null) Avatar(m.senderName, m.senderId, size = 30.dp, avatarHash = senderAvatar)
+            else Spacer(Modifier.width(30.dp))
         }
     }
 }
 
+private val senderColors = listOf(
+    Color(0xFF6366F1), Color(0xFF0EA5E9), Color(0xFFF97316), Color(0xFF10B981),
+    Color(0xFFEC4899), Color(0xFF8B5CF6), Color(0xFF14B8A6), Color(0xFFEF4444),
+)
+
+private fun senderColor(id: String) = senderColors[(id.hashCode() and 0x7fffffff) % senderColors.size]
+
 @Composable
-private fun VoiceContent(core: ChatCore, m: ChatMessage, playing: Boolean) {
+private fun VoiceContent(core: ChatCore, m: ChatMessage, playing: Boolean, mine: Boolean) {
     var progress by remember { mutableFloatStateOf(0f) }
     LaunchedEffect(playing) {
         progress = 0f
         while (playing) {
             progress = if (m.durationMs > 0) (core.voicePlayer.positionMs().toFloat() / m.durationMs).coerceIn(0f, 1f) else 0f
-            delay(200)
+            delay(100)
         }
     }
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(220.dp)) {
-        IconButton(onClick = { core.voicePlayer.toggle(m.id) }, enabled = m.hasMedia) {
-            Icon(if (playing) Icons.Default.Stop else Icons.Default.PlayArrow, contentDescription = if (playing) "עצור" else "נגן")
+    // A stable pseudo-waveform derived from the message id, so every note looks distinct.
+    val bars = remember(m.id) {
+        val rnd = java.util.Random(m.id.hashCode().toLong())
+        List(28) { 0.25f + rnd.nextFloat() * 0.75f }
+    }
+    val active = if (mine) Color.White else Brand.Violet
+    val inactive = if (mine) Color.White.copy(alpha = 0.4f) else MaterialTheme.colorScheme.outlineVariant
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(236.dp)) {
+        Box(
+            Modifier.size(40.dp).clip(CircleShape).background(if (mine) Color.White.copy(alpha = 0.22f) else MaterialTheme.colorScheme.primaryContainer)
+                .clickable(enabled = m.hasMedia) { core.voicePlayer.toggle(m.id) },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (playing) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = if (playing) "עצור" else "נגן",
+                tint = if (mine) Color.White else MaterialTheme.colorScheme.primary,
+            )
         }
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f)) {
-            LinearProgressIndicator(progress = { if (playing) progress else 0f }, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.size(4.dp))
-            Text("🎤 ${formatDuration(m.durationMs)}", style = MaterialTheme.typography.labelSmall)
+            Row(Modifier.fillMaxWidth().height(28.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                bars.forEachIndexed { i, h ->
+                    val on = playing && i.toFloat() / bars.size <= progress
+                    Box(Modifier.width(3.dp).fillMaxHeight(h).clip(CircleShape).background(if (on) active else inactive))
+                }
+            }
+            Text(
+                formatDuration(if (playing) (progress * m.durationMs).toLong() else m.durationMs),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (mine) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.outline,
+            )
         }
     }
 }
@@ -413,9 +568,16 @@ private fun ConversationInfoDialog(core: ChatCore, conv: String, onDismiss: () -
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(core.conversationTitle(conv)) },
+        shape = RoundedCornerShape(28.dp),
+        title = {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Avatar(core.conversationTitle(conv), conv, size = 88.dp, group = isGroup, avatarHash = contact?.avatar ?: "")
+                Spacer(Modifier.height(10.dp))
+                Text(core.conversationTitle(conv))
+            }
+        },
         text = {
-            Column {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
                 if (contact != null) {
                     Text("מספר בטיחות", style = MaterialTheme.typography.labelLarge)
                     Text(core.safetyNumber(contact.id) ?: "", fontFamily = FontFamily.Monospace)
@@ -433,7 +595,18 @@ private fun ConversationInfoDialog(core: ChatCore, conv: String, onDismiss: () -
                     Text("משתתפים", style = MaterialTheme.typography.labelLarge)
                     group.members.forEach { mem ->
                         val pending = mem.id in group.pendingInvites
-                        Text("• ${if (mem.id == core.myId) "אני" else mem.name}${if (pending) " (הזמנה ממתינה)" else ""}")
+                        val me = mem.id == core.myId
+                        Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(
+                                mem.name, mem.id, size = 36.dp,
+                                avatarHash = if (me) core.myAvatar else core.contact(mem.id)?.avatar ?: "",
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(if (me) "אני" else mem.name, style = MaterialTheme.typography.titleSmall)
+                                if (pending) Text("הזמנה ממתינה", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                            }
+                        }
                     }
                     Spacer(Modifier.size(8.dp))
                     Text("הודעות הקבוצה מוצפנות במפתח שמשותף רק למשתתפים.", style = MaterialTheme.typography.bodySmall)

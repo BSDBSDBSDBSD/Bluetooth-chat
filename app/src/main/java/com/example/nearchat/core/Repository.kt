@@ -18,6 +18,8 @@ class Repository(private val store: SecureStore) {
     private val unread = HashMap<String, Int>()
     private var name: String = "משתמש"
     private var connMode: ConnectionMode = ConnectionMode.AUTO
+    private var avatarHash: String = ""
+    private var onboardedFlag: Boolean = false
 
     private val dirty = HashSet<String>()
     private val saver = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "repo-saver").apply { isDaemon = true } }
@@ -33,6 +35,15 @@ class Repository(private val store: SecureStore) {
     var mode: ConnectionMode
         get() = synchronized(lock) { connMode }
         set(v) { synchronized(lock) { connMode = v; markDirty(PROFILE) } }
+
+    /** Hash of my own profile picture ("" = none). */
+    var myAvatar: String
+        get() = synchronized(lock) { avatarHash }
+        set(v) { synchronized(lock) { avatarHash = v; markDirty(PROFILE) } }
+
+    var onboarded: Boolean
+        get() = synchronized(lock) { onboardedFlag }
+        set(v) { synchronized(lock) { onboardedFlag = v; markDirty(PROFILE) } }
 
     // ---------- contacts ----------
     fun contacts(): List<Contact> = synchronized(lock) { contacts.values.toList() }
@@ -126,6 +137,7 @@ class Repository(private val store: SecureStore) {
 
     private fun serializeLocked(file: String): String? = when {
         file == PROFILE -> JSONObject().put("name", name).put("mode", connMode.name)
+            .put("av", avatarHash).put("ob", onboardedFlag)
             .put("unread", JSONObject().also { o -> unread.forEach { (k, v) -> o.put(k, v) } }).toString()
         file == CONTACTS -> JSONArray().also { a -> contacts.values.forEach { a.put(it.toJson()) } }.toString()
         file == GROUPS -> JSONArray().also { a -> groups.values.forEach { a.put(it.toJson()) } }.toString()
@@ -144,6 +156,9 @@ class Repository(private val store: SecureStore) {
                 val o = JSONObject(s)
                 name = o.optString("name", name)
                 connMode = runCatching { ConnectionMode.valueOf(o.optString("mode")) }.getOrDefault(ConnectionMode.AUTO)
+                avatarHash = o.optString("av", "")
+                // Profiles saved before onboarding existed already went through setup.
+                onboardedFlag = o.optBoolean("ob", true)
                 o.optJSONObject("unread")?.let { u -> u.keys().forEach { k -> unread[k] = u.optInt(k) } }
             }
             store.readText(CONTACTS)?.let { s ->

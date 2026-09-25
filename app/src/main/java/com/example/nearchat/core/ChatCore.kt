@@ -47,6 +47,7 @@ class ChatCore(private val context: Context) : Router.Listener {
     private val pairKeys = ConcurrentHashMap<String, ByteArray>()
     private val lastAnnounces = ConcurrentHashMap<String, Packet>()
     private val btAttempts = ConcurrentHashMap<String, Long>()
+    private val avatarRequests = ConcurrentHashMap<String, Long>()
     private var started = false
 
     /** Conversation currently on screen (no notification / unread for it). */
@@ -165,7 +166,7 @@ class ChatCore(private val context: Context) : Router.Listener {
     // ======================================================================
     private fun announcePacket() = Packet.create(
         Packet.KIND_ANNOUNCE, myId, Packet.BROADCAST,
-        meta = JSONObject().put("name", repo.myName).put("pub", myPublicKey).put("v", PROTOCOL_VERSION),
+        meta = JSONObject().put("name", repo.myName).put("pub", myPublicKey).put("v", PROTOCOL_VERSION).put("av", repo.myAvatar),
         ttl = Packet.ANNOUNCE_TTL,
     )
 
@@ -180,10 +181,17 @@ class ChatCore(private val context: Context) : Router.Listener {
         val keyChanged = old != null && old.publicKey != pub
         val direct = link.remoteId == p.from
         val bt = if (direct && link.transport == TransportKind.BLUETOOTH) link.address else old?.btAddress
-        val c = Contact(p.from, name, pub, System.currentTimeMillis(), bt, keyChanged || (old?.keyChanged == true))
-        val persist = old == null || old.name != name || keyChanged || old.btAddress != bt
+        val advertised = p.meta.optString("av").take(64)
+        var avatar = old?.avatar ?: ""
+        if (advertised.isEmpty() && avatar.isNotEmpty()) {
+            store.deleteMedia(avatarMediaId(p.from))
+            avatar = ""
+        }
+        val c = Contact(p.from, name, pub, System.currentTimeMillis(), bt, keyChanged || (old?.keyChanged == true), avatar)
+        val persist = old == null || old.name != name || keyChanged || old.btAddress != bt || old.avatar != avatar
         repo.upsertContact(c, persist)
         if (keyChanged) pairKeys.keys.removeAll { it.startsWith(p.from) }
+        if (advertised.isNotEmpty() && advertised != avatar) requestAvatar(p.from)
         lastAnnounces[p.from] = p
         if (!wasOnline) flushPendingFor(p.from)
         notifyChanged()
@@ -376,6 +384,8 @@ class ChatCore(private val context: Context) : Router.Listener {
             "edit" -> applyEdit(p.from, p.from, j)
             "del" -> applyDelete(p.from, p.from, j)
             "inv" -> handleInvite(p.from, j)
+            "avreq" -> sendMyAvatar(p.from)
+            "av" -> receiveAvatar(p.from, j, bin)
             "invack" -> repo.updateGroup(j.getString("gid")) { it.copy(pendingInvites = it.pendingInvites - p.from) }
         }
         notifyChanged()
@@ -441,6 +451,46 @@ class ChatCore(private val context: Context) : Router.Listener {
     }
 
     // ======================================================================
+    // Profile pictures
+    // ======================================================================
+    /** Sets (or with null, removes) my profile picture and tells everyone nearby. */
+    fun setMyAvatar(jpeg: ByteArray?) {
+        worker.execute {
+            if (jpeg == null) {
+                store.deleteMedia(avatarMediaId(myId))
+                repo.myAvatar = ""
+            } else {
+                store.writeMedia(avatarMediaId(myId), jpeg)
+                repo.myAvatar = Crypto.b64(java.security.MessageDigest.getInstance("SHA-256").digest(jpeg)).take(22)
+            }
+            broadcastAnnounce()
+        }
+    }
+
+    private fun requestAvatar(contactId: String) {
+        val now = System.currentTimeMillis()
+        if (now - (avatarRequests[contactId] ?: 0L) < 60_000) return
+        avatarRequests[contactId] = now
+        sendPrivate(contactId, JSONObject().put("t", "avreq"))
+    }
+
+    private fun sendMyAvatar(contactId: String) {
+        val hash = repo.myAvatar
+        val bytes = if (hash.isEmpty()) null else store.readMedia(avatarMediaId(myId))
+        if (bytes == null) return
+        sendPrivate(contactId, JSONObject().put("t", "av").put("h", hash), bytes, requireOnline = false)
+    }
+
+    private fun receiveAvatar(from: String, j: JSONObject, bin: ByteArray?) {
+        if (bin == null || bin.size > MAX_AVATAR_BYTES) return
+        val hash = Crypto.b64(java.security.MessageDigest.getInstance("SHA-256").digest(bin)).take(22)
+        if (hash != j.optString("h")) return
+        val c = repo.contact(from) ?: return
+        store.writeMedia(avatarMediaId(from), bin)
+        repo.upsertContact(c.copy(avatar = hash))
+    }
+
+    // ======================================================================
     // Retry / maintenance
     // ======================================================================
     private fun flushPendingFor(contactId: String) {
@@ -503,7 +553,7 @@ class ChatCore(private val context: Context) : Router.Listener {
         val out = ArrayList<ConversationSummary>()
         val convIds = repo.conversationIds()
         repo.contacts().filter { it.id in convIds }.forEach { c ->
-            out.add(ConversationSummary(c.id, c.name, false, isOnline(c), repo.lastMessage(c.id), repo.unread(c.id)))
+            out.add(ConversationSummary(c.id, c.name, false, isOnline(c), repo.lastMessage(c.id), repo.unread(c.id), c.avatar))
         }
         repo.groups().forEach { g ->
             out.add(ConversationSummary(g.conversationId, g.name, true, false, repo.lastMessage(g.conversationId), repo.unread(g.conversationId)))
@@ -534,6 +584,12 @@ class ChatCore(private val context: Context) : Router.Listener {
             worker.execute { broadcastAnnounce() }
         }
 
+    val myAvatar: String get() = repo.myAvatar
+
+    var onboarded: Boolean
+        get() = repo.onboarded
+        set(v) { repo.onboarded = v; notifyChanged() }
+
     fun safetyNumber(contactId: String): String? = repo.contact(contactId)?.let { Crypto.safetyNumber(myPublicKey, it.publicKey) }
     fun myFingerprint(): String = Crypto.shortFingerprint(myPublicKey)
 
@@ -548,5 +604,6 @@ class ChatCore(private val context: Context) : Router.Listener {
         private const val TAG = "ChatCore"
         private const val IDENTITY = "identity.json"
         const val PROTOCOL_VERSION = 1
+        const val MAX_AVATAR_BYTES = 200_000
     }
 }

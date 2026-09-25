@@ -7,11 +7,13 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.net.wifi.WifiManager
 import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
+import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import com.example.nearchat.core.FoundDevice
@@ -35,6 +37,8 @@ class WifiDirectTransport(
     private val onChange: () -> Unit,
 ) {
     private val manager: WifiP2pManager? = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+    private val wifiManager: WifiManager? = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+    private val main = Handler(Looper.getMainLooper())
     private var channel: WifiP2pManager.Channel? = null
     private var receiverRegistered = false
 
@@ -51,6 +55,9 @@ class WifiDirectTransport(
 
     val supported: Boolean get() = manager != null && context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
 
+    /** Wi-Fi Direct needs the Wi-Fi radio on (no network or internet is needed). */
+    val wifiEnabled: Boolean get() = wifiManager?.isWifiEnabled == true
+
     fun hasPermissions() = context.checkSelfPermission(Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
 
     fun peers(): List<FoundDevice> = peers
@@ -59,10 +66,12 @@ class WifiDirectTransport(
         override fun onReceive(ctx: Context, intent: Intent) {
             when (intent.action) {
                 WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION -> {
+                    val was = p2pEnabled
                     p2pEnabled = intent.getIntExtra(WifiP2pManager.EXTRA_WIFI_STATE, -1) == WifiP2pManager.WIFI_P2P_STATE_ENABLED
-                    if (!p2pEnabled) status = "Wi‑Fi כבוי – הפעל Wi‑Fi (אין צורך באינטרנט)"
+                    status = if (!p2pEnabled) "Wi‑Fi כבוי – הפעל Wi‑Fi (אין צורך באינטרנט)" else if (!was) "Wi‑Fi Direct מוכן" else status
                     onChange()
                 }
+                WifiManager.WIFI_STATE_CHANGED_ACTION -> onChange()
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> requestConnectionInfo()
                 WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION -> {
@@ -84,6 +93,7 @@ class WifiDirectTransport(
                 addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
                 addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
                 addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION)
+                addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
             }
             context.registerReceiver(receiver, f, Context.RECEIVER_EXPORTED)
             receiverRegistered = true
@@ -96,24 +106,70 @@ class WifiDirectTransport(
         closeAll()
     }
 
-    private fun listener(ok: String, fail: String, after: (() -> Unit)? = null) = object : WifiP2pManager.ActionListener {
-        override fun onSuccess() { if (ok.isNotEmpty()) status = ok; onChange(); after?.invoke() }
-        override fun onFailure(reason: Int) {
-            status = "$fail (${reasonText(reason)})"; onChange()
+    private fun ensureChannel(): WifiP2pManager.Channel? {
+        if (channel == null) start()
+        return channel
+    }
+
+    /** Checks everything an operation needs; sets a helpful status and returns false if something is missing. */
+    private fun ready(): Boolean {
+        when {
+            manager == null -> status = "Wi‑Fi Direct לא נתמך במכשיר"
+            !hasPermissions() -> status = "חסרה הרשאת מכשירים בקרבת מקום"
+            !wifiEnabled -> status = "Wi‑Fi כבוי – לחץ \"הפעל Wi‑Fi\" (אין צורך באינטרנט)"
+            else -> return true
         }
+        onChange()
+        return false
+    }
+
+    /**
+     * Runs a Wi-Fi P2P call and, when the framework answers BUSY (code 2) – typically a
+     * leftover discovery, a half-finished connection or a stale group – clears that state
+     * and tries again a few times before giving up.
+     */
+    private fun p2p(
+        ok: String,
+        fail: String,
+        attempt: Int = 1,
+        after: (() -> Unit)? = null,
+        call: (WifiP2pManager, WifiP2pManager.Channel, WifiP2pManager.ActionListener) -> Unit,
+    ) {
+        val m = manager ?: return
+        val c = ensureChannel() ?: return
+        call(m, c, object : WifiP2pManager.ActionListener {
+            override fun onSuccess() { if (ok.isNotEmpty()) status = ok; onChange(); after?.invoke() }
+            override fun onFailure(reason: Int) {
+                if (reason == WifiP2pManager.BUSY && attempt < MAX_ATTEMPTS && wifiEnabled) {
+                    status = "Wi‑Fi Direct עסוק – מאפס ומנסה שוב ($attempt/${MAX_ATTEMPTS - 1})…"
+                    onChange()
+                    resetP2p()
+                    main.postDelayed({ p2p(ok, fail, attempt + 1, after, call) }, 1200L * attempt)
+                } else {
+                    status = "$fail (${reasonText(reason)})"; onChange()
+                }
+            }
+        })
+    }
+
+    /** Clears whatever keeps the P2P framework busy. Leaves an active group alone. */
+    private fun resetP2p() {
+        val m = manager ?: return; val c = channel ?: return
+        m.stopPeerDiscovery(c, null)
+        m.cancelConnect(c, null)
+        if (!groupFormed) m.removeGroup(c, null)
     }
 
     private fun reasonText(r: Int) = when (r) {
-        WifiP2pManager.P2P_UNSUPPORTED -> "לא נתמך"
-        WifiP2pManager.BUSY -> "המערכת עסוקה, נסה שוב"
-        WifiP2pManager.ERROR -> "שגיאה"
+        WifiP2pManager.P2P_UNSUPPORTED -> "לא נתמך במכשיר"
+        WifiP2pManager.BUSY -> if (!wifiEnabled) "Wi‑Fi כבוי" else "המערכת עסוקה – כבה והדלק Wi‑Fi ונסה שוב"
+        WifiP2pManager.ERROR -> "שגיאה פנימית – נסה שוב"
         else -> "קוד $r"
     }
 
     fun discover() {
-        val m = manager ?: return; val c = channel ?: run { start(); channel } ?: return
-        if (!hasPermissions()) { status = "חסרה הרשאה"; onChange(); return }
-        m.discoverPeers(c, listener("מחפש מכשירים ב‑Wi‑Fi Direct…", "החיפוש נכשל"))
+        if (!ready()) return
+        p2p("מחפש מכשירים ב‑Wi‑Fi Direct…", "החיפוש נכשל") { m, c, l -> m.discoverPeers(c, l) }
     }
 
     fun stopDiscovery() {
@@ -123,23 +179,28 @@ class WifiDirectTransport(
 
     /** Become group owner so several phones can join this one. */
     fun createGroup() {
-        val m = manager ?: return; val c = channel ?: return
-        m.createGroup(c, listener("נוצרה רשת – מכשירים אחרים יכולים להתחבר", "יצירת הרשת נכשלה"))
+        if (!ready()) return
+        if (groupFormed) { status = "כבר קיימת רשת Wi‑Fi Direct"; onChange(); return }
+        p2p("נוצרה רשת – מכשירים אחרים יכולים להתחבר", "יצירת הרשת נכשלה") { m, c, l -> m.createGroup(c, l) }
     }
 
     fun connect(address: String) {
-        val m = manager ?: return; val c = channel ?: return
+        if (!ready()) return
         val cfg = WifiP2pConfig().apply {
             deviceAddress = address
             wps.setup = WpsInfo.PBC
         }
-        m.connect(c, cfg, listener("שולח בקשת חיבור… אשר במכשיר השני אם תתבקש", "החיבור נכשל"))
+        // An ongoing scan is the most common reason connect() is rejected as BUSY.
+        manager?.stopPeerDiscovery(ensureChannel() ?: return, null)
+        main.postDelayed({
+            p2p("שולח בקשת חיבור… אשר במכשיר השני אם תתבקש", "החיבור נכשל") { m, c, l -> m.connect(c, cfg, l) }
+        }, 300)
     }
 
     fun disconnect() {
-        val m = manager ?: return; val c = channel ?: return
         closeAll()
-        m.removeGroup(c, listener("נותק", "הניתוק נכשל"))
+        if (manager == null || channel == null) return
+        p2p("נותק", "הניתוק נכשל") { m, c, l -> m.removeGroup(c, l) }
     }
 
     private fun requestPeers() {
@@ -256,5 +317,6 @@ class WifiDirectTransport(
     companion object {
         private const val TAG = "WifiDirect"
         const val PORT = 38988
+        private const val MAX_ATTEMPTS = 4
     }
 }
