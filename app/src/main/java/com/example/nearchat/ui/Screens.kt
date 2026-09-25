@@ -6,6 +6,8 @@ import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings as AndroidSettings
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -75,6 +77,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import com.example.nearchat.BuildInfo
+import com.example.nearchat.CrashLog
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -668,12 +672,38 @@ fun SettingsScreen(core: ChatCore, onBack: () -> Unit) {
                     Text("טביעת האצבע שלך", style = sectionTitle)
                     Text(core.myFingerprint(), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodyLarge)
                 }
+                CrashReportCard()
                 Text(
-                    "NearChat 1.3 · פרוטוקול ${ChatCore.PROTOCOL_VERSION}",
+                    "NearChat ${BuildInfo.version(ctx)} · פרוטוקול ${ChatCore.PROTOCOL_VERSION}",
                     style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.outline,
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding(), textAlign = TextAlign.Center,
                 )
             }
+        }
+    }
+}
+
+/** Shows the stack trace of the last crash (if any) so it can be copied and reported. */
+@Composable
+private fun CrashReportCard() {
+    val ctx = LocalContext.current
+    var report by remember { mutableStateOf(CrashLog.read(ctx)) }
+    val text = report ?: return
+    SoftCard {
+        Text("האפליקציה נסגרה בפעם הקודמת", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text.lineSequence().take(8).joinToString("\n"),
+            fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall,
+            maxLines = 8, overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                ctx.getSystemService(ClipboardManager::class.java)?.setPrimaryClip(ClipData.newPlainText("NearChat crash", text))
+                Toast.makeText(ctx, "הדוח הועתק", Toast.LENGTH_SHORT).show()
+            }) { Text("העתק דוח") }
+            TextButton(onClick = { CrashLog.clear(ctx); report = null }) { Text("מחק") }
         }
     }
 }
