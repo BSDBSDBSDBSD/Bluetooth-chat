@@ -29,7 +29,7 @@ jobs:
           packages: "platform-tools"
 
       - name: Install SDK packages
-        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+        run: sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "ndk;27.2.12479018" "cmake;3.22.1"
 
       - uses: gradle/actions/setup-gradle@v4
 
@@ -54,9 +54,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp app/build/outputs/apk/release/app-release.apk Ozer.apk
+          # Offline speech models (whisper.cpp), attached so everything downloads from one page.
+          HF=https://huggingface.co/ggerganov/whisper.cpp/resolve/main
+          MODELS=""
+          for m in ggml-small-q5_1.bin ggml-base-q5_1.bin; do
+            if curl -fsSL --retry 3 -o "$m" "$HF/$m"; then MODELS="$MODELS $m"; ls -l "$m"; else echo "::warning::could not download $m"; fi
+          done
           gh release delete assistant-latest -y --cleanup-tag || true
-          gh release create assistant-latest Ozer.apk --title "עוזר – build ${{ github.run_number }}" \
-            --notes "עוזר אישי אופליין. commit ${{ github.sha }}" --target ${{ github.sha }}
+          gh release create assistant-latest Ozer.apk $MODELS --title "עוזר – build ${{ github.run_number }}" \
+            --notes-file ../.github/assistant-release-notes.md --target ${{ github.sha }}
 
       - name: Save build log and APK to branch assistant-build
         if: always()

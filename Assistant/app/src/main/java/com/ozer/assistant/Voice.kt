@@ -35,7 +35,7 @@ class VoiceInput(
             useOnDevice -> SpeechRecognizer.createOnDeviceSpeechRecognizer(ctx)
             SpeechRecognizer.isRecognitionAvailable(ctx) -> SpeechRecognizer.createSpeechRecognizer(ctx)
             else -> {
-                onFail("אין בטלפון מנוע זיהוי דיבור. אפשר להתקין את 'Speech Services by Google' ולהוריד עברית לשימוש אופליין.")
+                onFail(NO_OFFLINE)
                 return
             }
         }
@@ -66,9 +66,7 @@ class VoiceInput(
                 onFail(
                     when (error) {
                         SpeechRecognizer.ERROR_NO_MATCH, SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "לא שמעתי טוב, נסה שוב."
-                        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT, 12, 13 ->
-                            "זיהוי דיבור בעברית בלי אינטרנט דורש הורדה של חבילת העברית: " +
-                                "הגדרות ← מערכת ← שפות ← זיהוי דיבור ← עברית (הורדה)."
+                        SpeechRecognizer.ERROR_NETWORK, SpeechRecognizer.ERROR_NETWORK_TIMEOUT, 12, 13 -> NO_OFFLINE
                         SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "צריך הרשאת מיקרופון."
                         else -> "שגיאה בזיהוי דיבור ($error)."
                     },
@@ -76,6 +74,11 @@ class VoiceInput(
             }
         })
         r.startListening(intent())
+    }
+
+    companion object {
+        const val NO_OFFLINE = "זיהוי הדיבור של הטלפון לא עובד בעברית בלי אינטרנט. " +
+            "כדי לדבר אופליין צריך להוסיף מודל Whisper: לשונית הגדרות ← זיהוי דיבור ← בחירת קובץ."
     }
 
     fun stop() {

@@ -37,6 +37,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -45,10 +46,16 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
 import com.ozer.assistant.actions.Reminders
+import com.ozer.assistant.speech.Recorder
+import com.ozer.assistant.speech.WhisperEngine
 import com.ozer.assistant.ui.ChatScreen
 import com.ozer.assistant.ui.NotesScreen
 import com.ozer.assistant.ui.RemindersScreen
 import com.ozer.assistant.ui.SettingsScreen
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val vm: AssistantViewModel by viewModels()
@@ -124,13 +131,51 @@ private fun Root(vm: AssistantViewModel, resumeTick: Int) {
         )
     }
     DisposableEffect(Unit) { onDispose { voice.stop() } }
+
+    // Offline Whisper recognition, when the user has installed a model file.
+    val whisper = remember { WhisperEngine.get(ctx) }
+    val recorder = remember { Recorder() }
+    val scope = rememberCoroutineScope()
+    var whisperJob by remember { mutableStateOf<Job?>(null) }
+    fun startWhisper() {
+        whisperJob = scope.launch {
+            try {
+                listening = true
+                partial = "מקשיב… דבר עכשיו"
+                val audio = withContext(Dispatchers.IO) { recorder.record() }
+                listening = false
+                if (audio == null) {
+                    partial = ""
+                    vm.messages += Message(false, "לא שמעתי כלום, נסה שוב.")
+                    return@launch
+                }
+                partial = "מזהה דיבור…"
+                val text = whisper.transcribe(audio)
+                partial = ""
+                if (text.isBlank()) vm.messages += Message(false, "לא הצלחתי להבין, נסה שוב.") else vm.send(text)
+            } catch (e: Exception) {
+                listening = false
+                partial = ""
+                vm.messages += Message(false, e.message ?: "שגיאה בזיהוי דיבור.")
+            }
+        }
+    }
+    fun startListening() = if (whisper.hasModel()) startWhisper() else voice.start()
+
     val micLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) voice.start() else vm.messages += Message(false, "בלי הרשאת מיקרופון אפשר להקליד בלבד.")
+        if (ok) startListening() else vm.messages += Message(false, "בלי הרשאת מיקרופון אפשר להקליד בלבד.")
     }
     val startMic = {
         speaker.stop()
-        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) voice.start()
+        if (ctx.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) startListening()
         else micLauncher.launch(Manifest.permission.RECORD_AUDIO)
+    }
+    fun onMic() {
+        when {
+            whisperJob?.isActive == true -> { if (listening) recorder.requestStop() }
+            listening -> { voice.stop(); listening = false }
+            else -> startMic()
+        }
     }
 
     Scaffold(
@@ -147,12 +192,10 @@ private fun Root(vm: AssistantViewModel, resumeTick: Int) {
     ) { pad ->
         val m = Modifier.fillMaxSize().padding(pad)
         when (tab) {
-            Tab.CHAT -> ChatScreen(vm, listening, partial, onMic = {
-                if (listening) { voice.stop(); listening = false } else startMic()
-            }, modifier = m)
+            Tab.CHAT -> ChatScreen(vm, listening, partial, onMic = { onMic() }, modifier = m)
             Tab.NOTES -> NotesScreen(vm.store, m)
             Tab.REMINDERS -> RemindersScreen(vm.store, m)
-            Tab.SETTINGS -> SettingsScreen(vm.store, speaker.hebrewAvailable, resumeTick, m)
+            Tab.SETTINGS -> SettingsScreen(vm, speaker.hebrewAvailable, resumeTick, m)
         }
     }
 }

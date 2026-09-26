@@ -5,7 +5,10 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
+import androidx.compose.runtime.mutableIntStateOf
 import com.ozer.assistant.data.Store
+import com.ozer.assistant.speech.WhisperEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -54,6 +57,41 @@ class AssistantViewModel(app: Application) : AndroidViewModel(app) {
                 permissionRequest.value = reply.permissions
             }
             busy.value = false
+        }
+    }
+
+    // ---------- Whisper model file ----------
+    val whisper = WhisperEngine.get(app)
+    /** Copy progress 0..1 while importing, null otherwise. */
+    val modelImport = mutableStateOf<Float?>(null)
+    val modelMessage = mutableStateOf("")
+    /** Bumped whenever the model file changes, so the settings screen re-reads it. */
+    val modelVersion = mutableIntStateOf(0)
+
+    fun importModel(uri: Uri) {
+        if (modelImport.value != null) return
+        modelImport.value = 0f
+        modelMessage.value = ""
+        viewModelScope.launch {
+            var lastPct = -1
+            val r = whisper.import(uri) { p ->
+                val pct = (p * 100).toInt()
+                if (pct != lastPct) { lastPct = pct; modelImport.value = p }
+            }
+            modelImport.value = null
+            modelMessage.value = r.fold(
+                { "המודל הותקן (${it / 1_000_000} מגה). עכשיו אפשר ללחוץ על המיקרופון ולדבר, גם בלי אינטרנט." },
+                { it.message ?: "ההתקנה נכשלה." },
+            )
+            modelVersion.intValue++
+        }
+    }
+
+    fun deleteModel() {
+        viewModelScope.launch {
+            whisper.deleteModel()
+            modelMessage.value = "המודל נמחק."
+            modelVersion.intValue++
         }
     }
 

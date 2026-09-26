@@ -32,13 +32,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.ozer.assistant.actions.Apps
 import com.ozer.assistant.actions.Music
-import com.ozer.assistant.data.Store
+import androidx.compose.material3.Button
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.layout.Arrangement
+import com.ozer.assistant.AssistantViewModel
+import com.ozer.assistant.speech.WhisperLib
 
 private class Perm(val title: String, val why: String, val granted: (Context) -> Boolean, val request: () -> Unit)
 
 @Composable
-fun SettingsScreen(store: Store, hebrewVoice: Boolean, resumeTick: Int, modifier: Modifier = Modifier) {
+fun SettingsScreen(vm: AssistantViewModel, hebrewVoice: Boolean, resumeTick: Int, modifier: Modifier = Modifier) {
     val ctx = LocalContext.current
+    val store = vm.store
     val speak by store.speak.collectAsState()
     val debug by store.showDebug.collectAsState()
     val refresh = remember { mutableIntStateOf(0) }
@@ -84,6 +90,9 @@ fun SettingsScreen(store: Store, hebrewVoice: Boolean, resumeTick: Int, modifier
         ToggleRow("להציג פרטי זיהוי", "מראה מה המודל הבין מכל פקודה", debug) { store.setShowDebug(it) }
 
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        SpeechModelSection(vm)
+
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
         Text("הרשאות", style = MaterialTheme.typography.titleMedium)
         Text("כל הרשאה נדרשת רק לפקודות מסוימות. שום מידע לא יוצא מהטלפון.",
             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
@@ -104,7 +113,7 @@ fun SettingsScreen(store: Store, hebrewVoice: Boolean, resumeTick: Int, modifier
         Text(
             "העוזר עובד בלי אינטרנט: מודל הבנה קטן (כ-2.4 מגה) רץ על הטלפון.\n" +
                 "מוסיקולט: " + (if (Apps.isInstalled(ctx, Music.MUSICOLET)) "מותקן ✓" else "לא מותקן — שירים ינוגנו בנגן אחר") + "\n" +
-                "לזיהוי דיבור בלי אינטרנט: הגדרות ← מערכת ← שפות ← זיהוי דיבור ← להוריד עברית.",
+                "מנוע דיבור: " + (if (WhisperLib.loaded) "Whisper מוכן" else "לא נטען (המכשיר לא נתמך)"),
             style = MaterialTheme.typography.bodyMedium,
         )
     }
@@ -120,5 +129,46 @@ private fun ToggleRow(title: String, subtitle: String, value: Boolean, onChange:
             }
         }
         Switch(checked = value, onCheckedChange = onChange)
+    }
+}
+
+@Composable
+private fun SpeechModelSection(vm: AssistantViewModel) {
+    val progress by vm.modelImport
+    val message by vm.modelMessage
+    val version by vm.modelVersion
+    val installed = remember(version) { vm.whisper.hasModel() }
+    val sizeMb = remember(version) { vm.whisper.modelSizeMb() }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) vm.importModel(uri)
+    }
+
+    Text("זיהוי דיבור בלי אינטרנט", style = MaterialTheme.typography.titleMedium)
+    Text(
+        if (installed) "✓ מודל Whisper מותקן ($sizeMb מגה). המיקרופון עובד בלי אינטרנט."
+        else "אין מודל. בלי מודל המיקרופון משתמש בזיהוי של הטלפון, שלא עובד בעברית בלי אינטרנט.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = if (installed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+    )
+    Text(
+        "איך מתקינים: מורידים את הקובץ ggml-small-q5_1.bin (מומלץ, כ-190 מגה) או ggml-base-q5_1.bin " +
+            "(קטן ומהיר יותר, פחות מדויק) במחשב, מעתיקים לטלפון (כבל או כרטיס זיכרון), ובוחרים אותו כאן.",
+        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline,
+        modifier = Modifier.padding(vertical = 4.dp),
+    )
+    val p = progress
+    if (p != null) {
+        Text("מעתיק… ${(p * 100).toInt()}%", style = MaterialTheme.typography.bodySmall)
+        LinearProgressIndicator(progress = { p }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp))
+    } else {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { picker.launch(arrayOf("*/*")) }) {
+                Text(if (installed) "להחליף מודל" else "בחירת קובץ מודל")
+            }
+            if (installed) OutlinedButton(onClick = { vm.deleteModel() }) { Text("מחיקה") }
+        }
+    }
+    if (message.isNotEmpty()) {
+        Text(message, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 4.dp))
     }
 }
