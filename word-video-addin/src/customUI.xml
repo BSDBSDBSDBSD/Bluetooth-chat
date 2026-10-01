@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui" onLoad="RibbonOnLoad">
+  <ribbon>
+    <tabs>
+      <tab id="tabWordVideo" label="וידאו" insertAfterMso="TabInsert">
+        <group id="grpVideo" label="סרטון מהמחשב">
+          <button id="btnInsert" label="הוסף וידאו" size="large" imageMso="MovieFromFileInsert"
+                  screentip="הוסף וידאו"
+                  supertip="מוסיף נגן וידאו במקום הסמן. הסרטון מועתק לתיקייה ליד המסמך."
+                  onAction="RibbonInsertVideo"/>
+          <button id="btnReplace" label="החלף סרטון" size="large" imageMso="Refresh"
+                  screentip="החלף סרטון"
+                  supertip="מחליף את הסרטון בנגן שבשורה של הסמן."
+                  onAction="RibbonReplaceVideo"/>
+        </group>
+        <group id="grpSize" label="גודל הנגן">
+          <button id="btnSizeSmall" label="קטן" imageMso="SizeToControlHeight" onAction="RibbonSize"/>
+          <button id="btnSizeMedium" label="בינוני" imageMso="SizeToControlHeight" onAction="RibbonSize"/>
+          <button id="btnSizeFull" label="רוחב מלא" imageMso="SizeToControlHeight" onAction="RibbonSize"/>
+        </group>
+        <group id="grpTools" label="כלים">
+          <button id="btnRefresh" label="רענן נגנים" imageMso="Refresh"
+                  supertip="מחבר מחדש את כל הנגנים במסמך לקובצי הווידאו."
+                  onAction="RibbonRefresh"/>
+          <button id="btnHelp" label="עזרה" imageMso="Help" onAction="RibbonHelp"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>
