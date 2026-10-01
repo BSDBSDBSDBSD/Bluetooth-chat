@@ -17,20 +17,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, '..', 'src')
 
 
-def payload_lines(b64: str, width: int = 240) -> str:
-    """VBA source that returns the Base64 payload, chunked under the line limit."""
-    lines = ['    Dim s As String']
-    for i in range(0, len(b64), width):
-        lines.append('    s = s & "%s"' % b64[i:i + width])
-    lines.append('    Payload = s')
-    return '\n'.join(lines)
+PAYLOAD_NS = 'urn:wordvideo:payload'
+PAYLOAD_GUID = '{C8A7F0E2-9B3D-4A61-8E2F-1D4B6A9C3E57}'
 
 
-def installer_source(dotm_bytes: bytes) -> str:
-    b64 = base64.b64encode(dotm_bytes).decode('ascii')
+def installer_source() -> str:
     with open(os.path.join(SRC, 'modInstaller.bas'), encoding='utf-8') as f:
-        src = f.read()
-    return src.replace('    PAYLOAD_PLACEHOLDER', payload_lines(b64))
+        return f.read()
 
 
 THIS_DOCUMENT = '\n'.join([
@@ -52,6 +45,7 @@ CONTENT_TYPES = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/>
 <Override PartName="/word/document.xml" ContentType="application/vnd.ms-word.document.macroEnabled.main+xml"/>
 <Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+<Override PartName="/customXml/itemProps1.xml" ContentType="application/vnd.openxmlformats-officedocument.customXmlProperties+xml"/>
 </Types>'''
 
 ROOT_RELS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -64,7 +58,24 @@ ROOT_RELS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 DOCUMENT_RELS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.microsoft.com/office/2006/relationships/vbaProject" Target="vbaProject.bin"/>
+<Relationship Id="rId10" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXml" Target="../customXml/item1.xml"/>
 </Relationships>'''
+
+ITEM_PROPS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<ds:datastoreItem ds:itemID="%s" xmlns:ds="http://schemas.openxmlformats.org/officeDocument/2006/customXml">
+<ds:schemaRefs><ds:schemaRef ds:uri="%s"/></ds:schemaRefs></ds:datastoreItem>''' % (PAYLOAD_GUID, PAYLOAD_NS)
+
+ITEM_RELS = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/customXmlProps" Target="itemProps1.xml"/>
+</Relationships>'''
+
+
+def payload_item(dotm_bytes: bytes) -> bytes:
+    b64 = base64.b64encode(dotm_bytes).decode('ascii')
+    xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+           '<payload xmlns="%s">%s</payload>' % (PAYLOAD_NS, b64))
+    return xml.encode('utf-8')
 
 CORE = '''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/">
@@ -114,7 +125,7 @@ def build(path: str) -> None:
     d.PROJECT_NAME = 'WordVideoInstall'
     d.MODULES = [
         ('ThisDocument', 'doc', THIS_DOCUMENT),
-        ('modInstaller', 'std', installer_source(dotm_bytes)),
+        ('modInstaller', 'std', installer_source()),
     ]
 
     with open(os.path.join(SRC, 'customUI_install.xml'), 'rb') as f:
@@ -129,6 +140,9 @@ def build(path: str) -> None:
         z.writestr('word/_rels/document.xml.rels', DOCUMENT_RELS)
         z.writestr('word/vbaProject.bin', d.vba_project_bin())
         z.writestr('customUI/customUI.xml', custom_ui)
+        z.writestr('customXml/item1.xml', payload_item(dotm_bytes))
+        z.writestr('customXml/itemProps1.xml', ITEM_PROPS)
+        z.writestr('customXml/_rels/item1.xml.rels', ITEM_RELS)
     with open(path, 'wb') as f:
         f.write(buf.getvalue())
 

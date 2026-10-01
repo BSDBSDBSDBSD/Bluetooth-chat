@@ -2,11 +2,13 @@ Attribute VB_Name = "modInstaller"
 Option Explicit
 
 ' Installer carried inside the WordVideo-Install document.
-' WordVideo.dotm is embedded as Base64 (see Payload, filled by build_docm.py).
+' WordVideo.dotm is embedded as Base64 in a Custom XML part of this document
+' (namespace below), not in code, so there is no oversized VBA procedure.
 ' Clicking "התקן" writes it to Word's STARTUP folder and loads it at once, so
 ' the add-in is active immediately and on every later start of Word.
 
 Private Const ADDIN_NAME As String = "WordVideo.dotm"
+Private Const PAYLOAD_NS As String = "urn:wordvideo:payload"
 
 Public Sub RibbonInstall(control As IRibbonControl)
     InstallAddin
@@ -17,17 +19,27 @@ Public Sub RibbonUninstall(control As IRibbonControl)
 End Sub
 
 Public Sub InstallAddin()
-    Dim startup As String, dest As String, bytes() As Byte, i As Integer
+    Dim startup As String, dest As String, b64 As String, bytes() As Byte, i As Integer
+
+    b64 = ReadPayload()
+    If b64 = "" Then
+        Msg U("לא מצאתי את קובץ התוסף בתוך המסמך. ייתכן שהמסמך נשמר מחדש ואיבד את התוכן. " & _
+              "הורד שוב את הקובץ המקורי ונסה שוב."), vbExclamation
+        Exit Sub
+    End If
+
     startup = Application.startupPath
     If startup = "" Then
         Msg U("לא מצאתי את תיקיית ההפעלה של Word."), vbExclamation
         Exit Sub
     End If
+    On Error Resume Next
     If Dir(startup, vbDirectory) = "" Then MkDir startup
+    On Error GoTo 0
     dest = startup & "\" & ADDIN_NAME
 
     On Error GoTo Failed
-    bytes = DecodeBase64(Payload())
+    bytes = DecodeBase64(b64)
     WriteBytes dest, bytes
 
     ' Remove a previous copy from the add-ins list, then load the new one.
@@ -65,10 +77,24 @@ Public Sub UninstallAddin()
     Msg U("התוסף הוסר."), vbInformation
 End Sub
 
+' Reads the Base64 add-in from the document's Custom XML part.
+Private Function ReadPayload() As String
+    Dim parts As Object
+    On Error Resume Next
+    Set parts = ActiveDocument.CustomXMLParts.SelectByNamespace(PAYLOAD_NS)
+    If Not parts Is Nothing Then
+        If parts.Count >= 1 Then ReadPayload = parts(1).DocumentElement.Text
+    End If
+    On Error GoTo 0
+End Function
+
 ' MSXML decodes the Base64; ADODB writes the bytes to disk.
 Private Function DecodeBase64(ByVal b64 As String) As Byte()
     Dim xml As Object, node As Object
+    On Error Resume Next
     Set xml = CreateObject("MSXML2.DOMDocument.6.0")
+    If xml Is Nothing Then Set xml = CreateObject("MSXML2.DOMDocument")
+    On Error GoTo 0
     Set node = xml.createElement("b")
     node.DataType = "bin.base64"
     node.Text = b64
@@ -97,9 +123,4 @@ Public Function U(ByVal s As String) As String
         i = InStr(i + 1, s, "\u")
     Loop
     U = s
-End Function
-
-' ---- Payload (filled by build_docm.py) ----
-Private Function Payload() As String
-    PAYLOAD_PLACEHOLDER
 End Function
