@@ -7,7 +7,7 @@ Option Explicit
 ' path is kept in the player's alt text, so when the document and its folder
 ' are moved together the player is pointed at the new location on open.
 '
-' Note: the installer converts every non-ASCII character in this file to \uXXXX,
+' Note: build/build_dotm.py converts every non-ASCII character in this file to \uXXXX,
 ' so all Hebrew text must be wrapped in U("...").
 
 Private Const WMP_PROGID As String = "WMPlayer.OCX"
@@ -362,7 +362,7 @@ Private Sub Msg(ByVal text As String, ByVal style As Long)
     MsgBox text, style Or vbMsgBoxRtlReading Or vbMsgBoxRight, U("נגן וידאו ל-Word")
 End Sub
 
-' Decodes \uXXXX escapes (the installer writes Hebrew this way).
+' Decodes \uXXXX escapes (the build script writes Hebrew this way).
 Public Function U(ByVal s As String) As String
     Dim i As Long
     i = InStr(s, "\u")
