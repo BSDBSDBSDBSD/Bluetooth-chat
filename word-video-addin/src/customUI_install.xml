@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2006/01/customui">
+  <ribbon>
+    <tabs>
+      <tab id="tabInstall" label="התקנת וידאו" insertBeforeMso="TabHome">
+        <group id="grpInstall" label="נגן וידאו ל-Word">
+          <button id="btnInstall" label="התקן את התוסף" size="large" imageMso="SaveAll"
+                  screentip="התקן את התוסף"
+                  supertip="מתקין את נגן הווידאו ב-Word. אחרי ההתקנה תופיע לשונית 'וידאו' ליד 'הוספה'."
+                  onAction="RibbonInstall"/>
+          <button id="btnUninstall" label="הסר" size="large" imageMso="Delete"
+                  screentip="הסר את התוסף"
+                  onAction="RibbonUninstall"/>
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>
